@@ -107,7 +107,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except asyncio.TimeoutError:
         await message.reply_text("La generazione ha impiegato troppo tempo. Riprova.")
     except Exception as error:
-        logger.error("Errore durante la generazione: %s", type(error).__name__)
+                detail = str(error)[:200]
+        logger.error("Errore durante la generazione: %s %s", type(error).__name__, detail)
         await message.reply_text(
             "Non sono riuscito a creare il vocale. Riprova tra poco."
         )
