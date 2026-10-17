@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fishaudio import FishAudio
+import httpx
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -29,6 +29,8 @@ logger = logging.getLogger("vocali")
 
 MAX_CHARS = 500
 TTS_TIMEOUT = 120
+FISH_URL = "https://api.fish.audio/v1/tts"
+FISH_MODEL = "s2.1-pro-free"
 
 
 def read_int(name):
@@ -42,12 +44,26 @@ OWNER_ID = read_int("OWNER_ID")
 FISH_API_KEY = os.environ.get("FISH_API_KEY", "").strip()
 VOICE_MODEL_ID = os.environ.get("VOICE_MODEL_ID", "").strip()
 
-fish_client = FishAudio(api_key=FISH_API_KEY) if FISH_API_KEY else None
-
 
 def is_owner(update: Update) -> bool:
     user = update.effective_user
     return user is not None and OWNER_ID is not None and user.id == OWNER_ID
+
+
+async def synthesize(text: str) -> bytes:
+    headers = {
+        "Authorization": f"Bearer {FISH_API_KEY}",
+        "Content-Type": "application/json",
+        "model": FISH_MODEL,
+    }
+    body = {"text": text, "reference_id": VOICE_MODEL_ID, "format": "mp3"}
+    async with httpx.AsyncClient(timeout=TTS_TIMEOUT) as client:
+        response = await client.post(FISH_URL, headers=headers, json=body)
+    if response.status_code != 200:
+        raise RuntimeError(f"Fish HTTP {response.status_code}: {response.text[:150]}")
+    if not response.content:
+        raise RuntimeError("audio vuoto")
+    return response.content
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -80,21 +96,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Il testo è troppo lungo: il massimo è {MAX_CHARS} caratteri."
         )
         return
-    if fish_client is None or not VOICE_MODEL_ID:
+    if not FISH_API_KEY or not VOICE_MODEL_ID:
         await message.reply_text("Il bot non è ancora configurato (voce o chiave mancanti).")
         return
 
     status = await message.reply_text("Sto generando il vocale...")
     try:
-        audio = await asyncio.wait_for(
-            asyncio.to_thread(
-                fish_client.tts.convert, text=text, reference_id=VOICE_MODEL_ID
-            ),
-            timeout=TTS_TIMEOUT,
-        )
-        data = audio if isinstance(audio, (bytes, bytearray)) else b"".join(audio)
-        if not data:
-            raise RuntimeError("audio vuoto")
+        data = await asyncio.wait_for(synthesize(text), timeout=TTS_TIMEOUT)
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "vocale.mp3"
@@ -104,7 +112,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             with path.open("rb") as audio_file:
                 await message.reply_voice(voice=audio_file)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, httpx.TimeoutException):
         await message.reply_text("La generazione ha impiegato troppo tempo. Riprova.")
     except Exception as error:
         detail = str(error)[:200]
